@@ -8,12 +8,24 @@ on:
 
 jobs:
   build-and-test:
-    name: ${{ matrix.os }} - C++20
+    name: ${{ matrix.os }} - ${{ matrix.compiler }} (ASan/UBSan)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            compiler: clang++
+            c_compiler: clang
+            sanitizers: "-DENABLE_SAN=ON"
+          - os: ubuntu-latest
+            compiler: g++
+            c_compiler: gcc
+            sanitizers: "-DENABLE_SAN=ON"
+          - os: windows-latest
+            compiler: clang++
+            c_compiler: clang
+            sanitizers: "-DENABLE_SAN=OFF"
 
     steps:
       - name: Checkout repository
@@ -25,19 +37,24 @@ jobs:
           cmake-version: '3.28.x'
 
       - name: Configure CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
+          ${{ matrix.sanitizers }}
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config Debug
 
-      - name: Run Tests
-        run: ctest --test-dir build --output-on-failure -C Release
+      - name: Run Tests (ASan + UBSan + Differential)
+        run: ctest --test-dir build --output-on-failure -C Debug
 
       - name: Run Demo
         shell: bash
         run: |
           if [ "${{ runner.os }}" == "Windows" ]; then
-            ./build/Release/fastbook_demo.exe || ./build/fastbook_demo.exe
+            ./build/Debug/fastbook_demo.exe || ./build/fastbook_demo.exe
           else
             ./build/fastbook_demo
           fi

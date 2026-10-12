@@ -3,46 +3,83 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-orange.svg)](https://en.wikipedia.org/wiki/C%2B%2B20)
 [![CI](https://github.com/Skeletor-Pirate/fastbook/actions/workflows/ci.yml/badge.svg)](https://github.com/Skeletor-Pirate/fastbook/actions)
-[![Tests Passing](https://img.shields.io/badge/Tests-147%20Passed-brightgreen.svg)]()
+[![Sanitizers](https://img.shields.io/badge/Sanitizers-ASan%20%7C%20UBSan-brightgreen.svg)]()
+[![Differential Tests](https://img.shields.io/badge/Fuzzing-Differential%20Verified-blueviolet.svg)]()
 
-**FastBook** is an ultra-fast, deterministic, high-performance Limit Order Book (LOB) and Matching Engine written in modern C++20. Designed for algorithmic trading systems, quantitative research, and exchange simulations requiring strict price-time priority (FIFO) execution.
+**FastBook** is a clean, deterministic C++20 Limit Order Book (LOB) and Matching Engine **reference implementation**. It is designed as an executable specification for algorithmic trading systems, quantitative research, and exchange simulations requiring strict price-time priority (FIFO) execution and formal correctness.
+
+---
+
+## 🏛️ Design & Reference Architecture
+
+FastBook v0 implements the canonical reference model:
+- **Price Levels**: `std::map<Price, std::list<Order>>` providing naturally ordered depth (descending for bids, ascending for asks).
+- **FIFO Queues**: Doubly linked lists (`std::list<Order>`) guaranteeing strict queue-order matching per price level.
+- **Order Indexing**: `std::unordered_map<OrderId, iterator>` for order lookups.
+- **Time Complexities**:
+  - Insert / Aggressive Cross: $O(\log(\text{levels}) + \text{fills})$
+  - Order Cancel: $O(1)$ iterator lookup + $O(\log(\text{levels}))$ tree cleanup when an entire price level is emptied.
+  - Modify Downsize: $O(1)$ in-place quantity reduction preserving queue position.
+  - Modify Upsize / Price Change: $O(\log(\text{levels}))$ cancel + re-insert at the back of the queue.
+
+*Note: As a v0 reference implementation, FastBook prioritizes formal correctness, invariant preservation, and differential equivalence over raw micro-optimizations. Contiguous pool allocators and lock-free ring buffers are reserved for subsequent milestone models.*
 
 ---
 
 ## ✨ Features
 
-- **Price-Time Priority (FIFO)**: Strict price-time order matching semantics with deterministic execution ordering.
-- **Multiple Order Types**:
+- **Price-Time Priority (FIFO)**: Strict queue-order execution with deterministic trade sequence numbering.
+- **Order Types**:
   - `Limit`: Resting orders placed in depth queues; matches crossable opposing liquidity immediately.
-  - `Market`: Immediate liquidity extraction against opposing book levels.
-  - `Immediate-Or-Cancel (IOC)`: Fills available liquidity at or better than limit price; remaining quantity is immediately cancelled.
-- **$O(1)$ Order Cancellation**: Constant-time cancel operations indexed by unique `OrderId`.
+  - `Market`: Immediate liquidity extraction across price levels; trades carry taker `incoming_id`.
+  - `Immediate-Or-Cancel (IOC)`: Executes immediately at limit or better; unexecuted quantity is cancelled immediately.
 - **Priority-Preserving Order Modification**:
   - Quantity downsizing retains existing price-time queue priority.
-  - Quantity increases or price changes cancel and re-enter at the back of the queue.
-- **Deterministic Event-Driven Engine**: Emits strongly typed events (`Ack`, `Trade`, `CancelAck`, `Reject`) with byte-for-byte reproducible streams.
-- **Market Data Inspection**: Real-time Level 2 (L2) book depth snapshots and Best Bid/Offer (BBO) queries.
-- **Zero Heavy Dependencies**: Pure C++20 standard library baseline with automatic Catch2 test integration via CMake FetchContent.
+  - Quantity increases or price modifications cancel and re-enter at the back of the queue.
+  - Modification to quantity zero is safely rejected without book corruption.
+- **Deterministic Event-Driven Stream**: Strongly typed events (`Ack`, `Trade`, `CancelAck`, `Reject`) with byte-for-byte reproducible orderings.
+- **Robust Market Inspection**:
+  - Best Bid / Offer (BBO) queries returning `std::optional<Price>` (eliminates magic zero-sentinel ambiguities).
+  - Level 2 (L2) book depth snapshots explicitly labeled with `Side` (`DepthLevel`).
+- **Zero Heavy Dependencies**: Pure C++20 standard library core. Only Catch2 is utilized for the test harnesses.
 
 ---
 
-## 🏛️ Architecture & Functional Specification
+## 📋 Functional Requirements & Verification
 
-FastBook adheres to the rigorous functional requirements expected of high-frequency trading (HFT) reference engines:
-
-| Spec ID | Requirement | Implementation Status |
+| Spec ID | Requirement | Status |
 | :--- | :--- | :--- |
 | **FR-1** | Add limit order that does not cross rests at price level | ✅ Verified |
-| **FR-2** | Incoming order matches best opposite price first (FIFO) | ✅ Verified |
-| **FR-3** | Trade price equals resting order price (price-time maker price) | ✅ Verified |
-| **FR-4** | Aggressor with residual quantity rests in book at limit price | ✅ Verified |
-| **FR-5** | Market order matches across price levels | ✅ Verified |
-| **FR-6** | Immediate-Or-Cancel (IOC) fills what it can and cancels rest | ✅ Verified |
-| **FR-7** | Cancel by order ID removes resting order in $O(1)$ time | ✅ Verified |
-| **FR-8** | Deterministic event stream: `Ack` before `Trade` | ✅ Verified |
-| **FR-9** | Reject duplicate order ID on entry | ✅ Verified |
-| **FR-10**| Quantity downsize maintains queue position; upsize loses priority | ✅ Verified |
-| **FR-11**| Depth snapshot aggregates total quantity per price level | ✅ Verified |
+| **FR-2** | Incoming order matches best opposite price first (FIFO within price) | ✅ Verified |
+| **FR-3** | Partially filled limit order rests with remaining quantity | ✅ Verified |
+| **FR-4** | Market order matches until filled or book empty, never rests, reports taker ID | ✅ Verified |
+| **FR-5** | Immediate-Or-Cancel (IOC) fills what it can at limit or better, cancels rest | ✅ Verified |
+| **FR-6** | Cancel by order ID removes resting order; unknown ID rejected | ✅ Verified |
+| **FR-7** | Modify: downsize preserves priority; upsize / price change cancels and re-adds at back | ✅ Verified |
+| **FR-8** | Event emission ordering: `Ack` before `Trade`, `CancelAck`, `Reject` | ✅ Verified |
+| **FR-9** | Query BBO (`std::optional<Price>`) and depth snapshot of $N$ levels with explicit `Side` | ✅ Verified |
+| **FR-10**| Determinism: identical input sequences produce byte-identical output events | ✅ Verified |
+| **FR-11**| Reject zero quantity (add/modify) and duplicate IDs (limit/market/IOC) | ✅ Verified *(Price-range check planned for bounded v2)* |
+
+---
+
+## 🧪 Testing & Differential Fuzzing
+
+FastBook is verified with multiple layers of automated testing under **AddressSanitizer (ASan)** and **UndefinedBehaviorSanitizer (UBSan)**:
+
+1. **Unit & Functional Suites**: Handcrafted test suites verifying all functional requirements (FR-1 through FR-11) along with explicit regression probes for use-after-free conditions on full fills, price-level erasures, and order modifications.
+2. **Randomized Differential Fuzzing (`test_differential.cpp`)**: A dual-engine property test feeding tens of thousands of randomized messages to both FastBook and a second, naive vector-based reference engine (`NaiveEngine`), verifying identical event streams, order counts, BBOs, and depth states at every transition.
+
+```bash
+# Run test suite with ASan/UBSan enabled
+ctest --test-dir build --output-on-failure
+```
+
+```text
+Randomness seeded to: 4076003426
+===============================================================================
+All tests passed (27357 assertions in 14 test cases)
+```
 
 ---
 
@@ -59,16 +96,16 @@ FastBook adheres to the rigorous functional requirements expected of high-freque
 git clone https://github.com/Skeletor-Pirate/fastbook.git
 cd fastbook
 
-# Configure build with CMake
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+# Configure with sanitizers enabled (Debug)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_SAN=ON
 
-# Build executables
-cmake --build build --config Release
+# Build
+cmake --build build --config Debug
 
-# Run automated tests (Catch2)
-ctest --test-dir build --output-on-failure
+# Run all unit and differential tests
+ctest --test-dir build --output-on-failure -C Debug
 
-# Run the demo engine
+# Run the demo binary
 ./build/fastbook_demo
 ```
 
@@ -84,7 +121,7 @@ ctest --test-dir build --output-on-failure
 int main() {
     fastbook::MatchingEngine engine;
 
-    // Place a resting ask: 10 units at price 100
+    // Resting ask: 10 units at price 100
     fastbook::AddOrder ask{
         .order_id = 1,
         .side = fastbook::Side::Ask,
@@ -92,9 +129,9 @@ int main() {
         .quantity = 10,
         .type = fastbook::OrderType::Limit
     };
-    auto events1 = engine.process(ask);
+    engine.process(ask);
 
-    // Place an incoming aggressive bid: 5 units at price 100
+    // Incoming aggressive bid: 5 units at price 100
     fastbook::AddOrder bid{
         .order_id = 2,
         .side = fastbook::Side::Bid,
@@ -102,11 +139,20 @@ int main() {
         .quantity = 5,
         .type = fastbook::OrderType::Limit
     };
-    auto events2 = engine.process(bid);
+    auto events = engine.process(bid);
 
-    // Inspect BBO
+    // Inspect BBO with std::optional
     auto [best_bid, best_ask] = engine.get_order_book().best_bid_ask();
-    std::cout << "Best Ask: " << best_ask << " | Resting Qty: 5\n";
+    if (best_ask.has_value()) {
+        std::cout << "Best Ask: " << *best_ask << "\n";
+    }
+
+    // Inspect L2 depth with explicit sides
+    auto depth = engine.get_order_book().depth(5);
+    for (const auto& level : depth) {
+        std::cout << (level.side == fastbook::Side::Bid ? "BID" : "ASK")
+                  << " " << level.price << " : " << level.quantity << "\n";
+    }
 
     return 0;
 }
@@ -114,29 +160,12 @@ int main() {
 
 ---
 
-## 🧪 Test Suite & Verification
-
-The test suite validates every functional requirement with **147 assertions across 11 Catch2 test cases**:
-
-```text
-Randomness seeded to: 166735577
-===============================================================================
-All tests passed (147 assertions in 11 test cases)
-```
-
-To run individual tests with verbose outputs:
-```bash
-./build/fastbook_tests "[FR-2]" -v high
-```
-
----
-
 ## 🗺️ Roadmap
 
-- [x] **v0 Reference Model**: Idiomatic C++20 reference implementation for behavioral correctness and differential testing.
-- [ ] **v1 Flat Array / Intrusive Node**: Contiguous pool allocators to minimize cache misses and branch mispredictions.
-- [ ] **v2 Zero-Allocation Core**: Lock-free single-producer single-consumer (SPSC) ring buffer architecture with sub-microsecond tick-to-trade latency.
-- [ ] **v3 Market Data Feed**: Direct ITCH/OUCH and SBE binary feed handlers.
+- [x] **v0 Reference Implementation**: Canonical, verified C++20 behavioral reference engine with differential testing and memory sanitizer verification.
+- [ ] **v1 Contiguous Memory Model**: Flat array and intrusive node pool allocations to minimize pointer indirection and cache misses.
+- [ ] **v2 Zero-Allocation Engine**: Preallocated circular ring buffers with fixed price bounds and sub-microsecond latency benchmarks.
+- [ ] **v3 Market Data Gateway**: Binary ITCH/OUCH market data encoders and decoders.
 
 ---
 

@@ -32,21 +32,22 @@ OrderBook::execute_trades(Order& incoming, OppositeLevels& opposite_levels) {
 
             // Generate trade at resting order's price (price-time priority)
             trades.push_back({
-                .price      = resting.price,
-                .quantity   = traded,
-                .resting_id = resting.id,
+                .price       = resting.price,
+                .quantity    = traded,
+                .resting_id  = resting.id,
                 .incoming_id = incoming.id,
-                .ts         = next_ts_++
+                .ts          = next_ts_++
             });
 
             // Update quantities
             incoming.qty   -= traded;
             resting.qty    -= traded;
 
-            // If resting order is fully filled, remove it
+            // If resting order is fully filled, remove it.
+            // Note: Erase from orders_by_id_ BEFORE popping from list to prevent UAF.
             if (resting.qty == 0) {
-                level_list.pop_front();
                 orders_by_id_.erase(resting.id);
+                level_list.pop_front();
             }
         }
 
@@ -65,8 +66,6 @@ template std::vector<Trade> OrderBook::execute_trades<OrderBook::BidLevels>(Orde
 
 std::optional<std::vector<Trade>>
 OrderBook::add(const AddOrder& msg) {
-    std::vector<Trade> trades;
-
     // Check for duplicate id
     if (orders_by_id_.find(msg.order_id) != orders_by_id_.end()) {
         return std::nullopt;  // duplicate id
@@ -75,13 +74,13 @@ OrderBook::add(const AddOrder& msg) {
     Order incoming{msg.order_id, msg.side, msg.price, msg.quantity, next_ts_++};
 
     // Execute trades against the opposite side
-    if (msg.side == Side::Bid) {
-        trades = execute_trades(incoming, asks_);
-    } else {
-        trades = execute_trades(incoming, bids_);
-    }
+    std::vector<Trade> trades = (msg.side == Side::Bid)
+        ? execute_trades(incoming, asks_)
+        : execute_trades(incoming, bids_);
 
-    if (incoming.qty > 0) insert_order(incoming);
+    if (incoming.qty > 0) {
+        insert_order(incoming);
+    }
     return trades;
 }
 
@@ -95,13 +94,18 @@ OrderBook::cancel(const CancelOrder& msg) {
 
 std::optional<std::vector<Trade>>
 OrderBook::modify(const ModifyOrder& msg) {
+    if (msg.new_quantity == 0) {
+        return std::nullopt; // Reject 0 quantity modification
+    }
+
     auto it = orders_by_id_.find(msg.order_id);
     if (it == orders_by_id_.end()) return std::nullopt;
 
-    Order& resting = *it->second;
+    // Make an explicit copy of resting order before erase to avoid UAF
+    Order resting = *it->second;
 
     if (msg.new_quantity < resting.qty) {
-        resting.qty = msg.new_quantity;
+        it->second->qty = msg.new_quantity;
         return std::vector<Trade>{};
     }
 
@@ -118,48 +122,46 @@ OrderBook::modify(const ModifyOrder& msg) {
     return add(add_msg);
 }
 
-std::vector<Trade>
-OrderBook::market_order(Side side, Quantity qty, Timestamp ts) {
-    std::vector<Trade> trades;
+std::optional<std::vector<Trade>>
+OrderBook::market_order(Side side, Quantity qty, Timestamp ts, OrderId order_id) {
+    if (orders_by_id_.find(order_id) != orders_by_id_.end()) {
+        return std::nullopt; // duplicate id
+    }
+
     // Market orders match anything: set price to extreme so crossing check always passes
     Price extreme = (side == Side::Bid) ? std::numeric_limits<Price>::max()
                                         : std::numeric_limits<Price>::min();
-    Order incoming{0, side, extreme, qty, ts};
+    Order incoming{order_id, side, extreme, qty, ts};
 
-    if (side == Side::Bid) {
-        trades = execute_trades(incoming, asks_);
-    } else {
-        trades = execute_trades(incoming, bids_);
-    }
-    return trades;
+    return (side == Side::Bid) ? execute_trades(incoming, asks_)
+                               : execute_trades(incoming, bids_);
 }
 
-std::vector<Trade>
+std::optional<std::vector<Trade>>
 OrderBook::ioc_order(Side side, Price limit_price, Quantity qty, Timestamp ts, OrderId order_id) {
-    std::vector<Trade> trades;
+    if (orders_by_id_.find(order_id) != orders_by_id_.end()) {
+        return std::nullopt; // duplicate id
+    }
+
     Order incoming{order_id, side, limit_price, qty, ts};
 
-    if (side == Side::Bid) {
-        trades = execute_trades(incoming, asks_);
-    } else {
-        trades = execute_trades(incoming, bids_);
-    }
-    return trades;
+    return (side == Side::Bid) ? execute_trades(incoming, asks_)
+                               : execute_trades(incoming, bids_);
 }
 
-std::pair<Price, Price>
+std::pair<std::optional<Price>, std::optional<Price>>
 OrderBook::best_bid_ask() const {
-    Price best_bid = 0;
-    Price best_ask = std::numeric_limits<Price>::max();
+    std::optional<Price> best_bid = std::nullopt;
+    std::optional<Price> best_ask = std::nullopt;
 
     if (!bids_.empty()) best_bid = bids_.begin()->first;
     if (!asks_.empty()) best_ask = asks_.begin()->first;
     return {best_bid, best_ask};
 }
 
-std::vector<std::pair<Price, Quantity>>
+std::vector<DepthLevel>
 OrderBook::depth(size_t levels) const {
-    std::vector<std::pair<Price, Quantity>> result;
+    std::vector<DepthLevel> result;
     result.reserve(levels * 2);
 
     size_t bid_count = 0;
@@ -167,7 +169,7 @@ OrderBook::depth(size_t levels) const {
         if (bid_count >= levels) break;
         Quantity total = 0;
         for (const auto& order : list) total += order.qty;
-        result.emplace_back(price, total);
+        result.push_back({.price = price, .quantity = total, .side = Side::Bid});
         ++bid_count;
     }
 
@@ -176,7 +178,7 @@ OrderBook::depth(size_t levels) const {
         if (ask_count >= levels) break;
         Quantity total = 0;
         for (const auto& order : list) total += order.qty;
-        result.emplace_back(price, total);
+        result.push_back({.price = price, .quantity = total, .side = Side::Ask});
         ++ask_count;
     }
 

@@ -13,7 +13,7 @@ namespace fastbook {
 
 // v0 reference model: simplest correct design
 // price -> list of orders (FIFO within price)
-// order_id -> iterator into that list for O(1) cancel/modify
+// order_id -> iterator into that list
 
 struct Order {
     OrderId   id;
@@ -33,22 +33,26 @@ public:
     bool cancel(const CancelOrder& msg);
 
     // Modify semantics:
+    // - new_quantity == 0: returns nullopt (rejected)
     // - reduce quantity: keep same iterator (price/time priority), no trades
     // - increase or change price: cancel + re-add as new order at back of queue (may generate trades)
-    // Returns nullopt if order id is unknown; otherwise returns trades from the re-add (may be empty)
+    // Returns nullopt if order id is unknown or new_quantity == 0; otherwise returns trades from the re-add (may be empty)
     std::optional<std::vector<Trade>> modify(const ModifyOrder& msg);
 
     // Process market/IOC orders (immediate execution or cancel)
-    std::vector<Trade> market_order(Side side, Quantity qty, Timestamp ts);
-    std::vector<Trade> ioc_order(Side side, Price limit_price, Quantity qty, Timestamp ts, OrderId order_id);
+    // Returns nullopt if order_id is a duplicate
+    std::optional<std::vector<Trade>> market_order(Side side, Quantity qty, Timestamp ts, OrderId order_id);
+    std::optional<std::vector<Trade>> ioc_order(Side side, Price limit_price, Quantity qty, Timestamp ts, OrderId order_id);
 
     // Query functions
-    std::pair<Price, Price> best_bid_ask() const;
-    std::vector<std::pair<Price, Quantity>> depth(size_t levels) const;
+    // Returns {std::nullopt, std::nullopt} if book side is empty, avoiding 0 sentinel ambiguity
+    std::pair<std::optional<Price>, std::optional<Price>> best_bid_ask() const;
+    std::vector<DepthLevel> depth(size_t levels) const;
 
     // Accessors for testing/invariants
     size_t size() const { return orders_by_id_.size(); }
     bool empty() const { return orders_by_id_.empty(); }
+    bool has_order(OrderId id) const { return orders_by_id_.find(id) != orders_by_id_.end(); }
 
 private:
     // Helper: insert resting order into book, return iterator
@@ -77,7 +81,7 @@ private:
     Timestamp next_ts_{1};
 };
 
-// Inline implementations for header-only v0 (simplest)
+// Inline implementations
 inline typename std::list<Order>::iterator
 OrderBook::insert_order(const Order& order) {
     auto& level_list = (order.side == Side::Bid) ? bids_[order.price] : asks_[order.price];
@@ -89,12 +93,16 @@ OrderBook::insert_order(const Order& order) {
 
 inline void
 OrderBook::erase_order(typename std::list<Order>::iterator it) {
-    orders_by_id_.erase(it->id);
-    auto& level_list = (it->side == Side::Bid) ? bids_[it->price] : asks_[it->price];
+    OrderId id = it->id;
+    Side side = it->side;
+    Price price = it->price;
+
+    orders_by_id_.erase(id);
+    auto& level_list = (side == Side::Bid) ? bids_[price] : asks_[price];
     level_list.erase(it);
     if (level_list.empty()) {
-        if (it->side == Side::Bid) bids_.erase(it->price);
-        else asks_.erase(it->price);
+        if (side == Side::Bid) bids_.erase(price);
+        else asks_.erase(price);
     }
 }
 

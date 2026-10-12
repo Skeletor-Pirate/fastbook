@@ -57,14 +57,15 @@ int main() {
     // Show book state
     auto [best_bid, best_ask] = engine.get_order_book().best_bid_ask();
     std::cout << "\nBook state:\n";
-    std::cout << "  Best bid: " << (best_bid == 0 ? "none" : std::to_string(best_bid)) << "\n";
-    std::cout << "  Best ask: " << (best_ask == std::numeric_limits<fastbook::Price>::max() ? "none" : std::to_string(best_ask)) << "\n";
+    std::cout << "  Best bid: " << (best_bid.has_value() ? std::to_string(*best_bid) : "none") << "\n";
+    std::cout << "  Best ask: " << (best_ask.has_value() ? std::to_string(*best_ask) : "none") << "\n";
     std::cout << "  Order count: " << engine.get_order_book().size() << "\n";
 
     auto depth = engine.get_order_book().depth(5);
     std::cout << "  Depth (up to 5 levels):\n";
-    for (const auto& [price, qty] : depth) {
-        std::cout << "    Price " << price << ": qty " << qty << "\n";
+    for (const auto& level : depth) {
+        std::cout << "    [" << (level.side == fastbook::Side::Bid ? "BID" : "ASK")
+                  << "] Price " << level.price << ": qty " << level.quantity << "\n";
     }
 
     std::cout << "\nDemo complete.\n";

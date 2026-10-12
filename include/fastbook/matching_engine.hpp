@@ -15,14 +15,14 @@ public:
 
     // Accessors for testing/queries
     const OrderBook& get_order_book() const { return book_; }
-    size_t             size() const       { return book_.size(); }
+    OrderBook&       get_order_book()       { return book_; }
+    size_t           size() const           { return book_.size(); }
 
 private:
     OrderBook book_;
 };
 
 // Visitor that dispatches on the Message variant.
-// Takes the book directly to avoid needing friend access.
 class MessageVisitor {
 public:
     std::vector<Event>& events;
@@ -34,7 +34,6 @@ public:
             events.emplace_back(Reject{m.order_id, 0});  // zero quantity
             return;
         }
-        // TODO: price range checks (will implement in v2 with bounded array)
 
         std::vector<Trade> trades;
         switch (m.type) {
@@ -47,12 +46,24 @@ public:
                 trades = std::move(*opt);
                 break;
             }
-            case OrderType::Market:
-                trades = book.market_order(m.side, m.quantity, 0);
+            case OrderType::Market: {
+                auto opt = book.market_order(m.side, m.quantity, 0, m.order_id);
+                if (!opt.has_value()) {
+                    events.emplace_back(Reject{m.order_id, 1});  // duplicate id
+                    return;
+                }
+                trades = std::move(*opt);
                 break;
-            case OrderType::IOC:
-                trades = book.ioc_order(m.side, m.price, m.quantity, 0, m.order_id);
+            }
+            case OrderType::IOC: {
+                auto opt = book.ioc_order(m.side, m.price, m.quantity, 0, m.order_id);
+                if (!opt.has_value()) {
+                    events.emplace_back(Reject{m.order_id, 1});  // duplicate id
+                    return;
+                }
+                trades = std::move(*opt);
                 break;
+            }
         }
 
         // Per FR-8: Ack first, then trades
@@ -69,6 +80,12 @@ public:
     }
 
     void operator()(const ModifyOrder& m) const {
+        // Reject zero quantity modify
+        if (m.new_quantity == 0) {
+            events.emplace_back(Reject{m.order_id, 0});  // zero quantity
+            return;
+        }
+
         auto result = book.modify(m);
         if (!result.has_value()) {
             events.emplace_back(Reject{m.order_id, 1});  // unknown id

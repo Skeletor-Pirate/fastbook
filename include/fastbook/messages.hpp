@@ -47,13 +47,21 @@ struct Reject {
 
 using Event = std::variant<Ack, Trade, CancelAck, Reject>;
 
+// Explicitly labeled depth level
+struct DepthLevel {
+    Price    price;
+    Quantity quantity;
+    Side     side;
+    bool operator==(const DepthLevel&) const = default;
+};
+
 // Incoming messages from gateway
 struct AddOrder {
     OrderId    order_id;
     Side       side;
     Price      price;
     Quantity   quantity;
-    OrderType  type;  // only Limit matters here; Market/IOC handled separately
+    OrderType  type;  // Limit, Market, IOC
 };
 
 struct CancelOrder {
